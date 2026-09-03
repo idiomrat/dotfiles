@@ -31,3 +31,11 @@ function packedit --description 'Edit packfile, apply, run packctl, and re-add t
 
     chezmoi re-add
 end
+
+function chezmoi
+    if test "$argv[1]" = cd
+        cd (command chezmoi source-path)
+    else
+        command chezmoi $argv
+    end
+end
