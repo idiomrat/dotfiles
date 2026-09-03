@@ -29,6 +29,10 @@ function packedit --description 'Edit packfile, apply, run packctl, and re-add t
     or return 1
 
     chezmoi re-add
+
+    chezmoi add $HOME/.config/packfile.lock
+
+    chezmoi chattr create $HOME/.config/packfile.lock
 end
 
 function chezmoi
