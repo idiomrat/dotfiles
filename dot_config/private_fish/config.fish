@@ -10,3 +10,9 @@ alias clear='clear && fastfetch'
 
 alias update='ujust update && brew update && brew upgrade'
 
+function dotfiles-push
+    chezmoi re-add
+    chezmoi git -- add .
+    chezmoi git -- commit -m "$argv[1]"
+    chezmoi git -- push origin main
+end
