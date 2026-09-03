@@ -1,0 +1,52 @@
+[
+    {
+        "input_combination": [
+            {
+                "type": 2,
+                "code": 8,
+                "origin_hash": "b23655ef3720230ac8a17759cdcce1c0",
+                "analog_threshold": 1
+            },
+            {
+                "type": 2,
+                "code": 11,
+                "origin_hash": "b23655ef3720230ac8a17759cdcce1c0",
+                "analog_threshold": 1
+            }
+        ],
+        "target_uinput": "keyboard + mouse",
+        "output_symbol": "if_eq($shift, 1, then=key(F10), else=wheel(up, 30))",
+        "mapping_type": "key_macro"
+    },
+    {
+        "input_combination": [
+            {
+                "type": 2,
+                "code": 8,
+                "origin_hash": "b23655ef3720230ac8a17759cdcce1c0",
+                "analog_threshold": -1
+            },
+            {
+                "type": 2,
+                "code": 11,
+                "origin_hash": "b23655ef3720230ac8a17759cdcce1c0",
+                "analog_threshold": -1
+            }
+        ],
+        "target_uinput": "keyboard",
+        "output_symbol": "if_eq($shift, 1, then=key(F9), else=wheel(up, 30))",
+        "mapping_type": "key_macro"
+    },
+    {
+        "input_combination": [
+            {
+                "type": 1,
+                "code": 86,
+                "origin_hash": "e076f19d2912cf89f42c96b3607c2093"
+            }
+        ],
+        "target_uinput": "keyboard",
+        "output_symbol": "KEY_N",
+        "mapping_type": "key_macro"
+    }
+]
