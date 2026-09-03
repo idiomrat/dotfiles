@@ -100,7 +100,6 @@
   "managed": {
     "brew_cask": [],
     "brew_formula": [
-      "aria2",
       "chezmoi",
       "fastfetch",
       "fd",
