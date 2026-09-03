@@ -106,8 +106,7 @@
       "fish",
       "gh",
       "git",
-      "jq",
-      "zoxide"
+      "jq"
     ],
     "flatpak": [
       "com.github.johnfactotum.Foliate",
