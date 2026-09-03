@@ -18,7 +18,6 @@ fastfetch
 fd
 fish
 jq
-pipx
 chezmoi
 git
 gh
