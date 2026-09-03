@@ -16,3 +16,18 @@ function dotfiles-push
     chezmoi git -- commit -m "$argv[1]"
     chezmoi git -- push origin main
 end
+
+function packedit --description 'Edit packfile, apply, run packctl, and re-add the lockfile'
+    set -l target $argv[1]
+    if test -z "$target"
+        set target ~/.config/packfile
+    end
+
+    chezmoi edit $target
+    or return 1
+
+    chezmoi apply
+    or return 1
+
+    chezmoi re-add
+end
