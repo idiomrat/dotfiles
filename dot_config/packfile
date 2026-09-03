@@ -13,6 +13,7 @@
 # ripgrep
 # cask:visual-studio-code
 # tap:homebrew/cask-fonts
+aria2
 fastfetch
 fd
 fish
