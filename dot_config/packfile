@@ -1,0 +1,53 @@
+# Packfile - declarative manifest for Homebrew + Flatpak
+# Managed by packctl. Comments start with #, blank lines are ignored.
+#
+# Run `packctl apply` to install anything missing below. Removing a line
+# and re-running apply will also uninstall it automatically - packctl only
+# ever touches things it previously installed via this file; anything else
+# on your system is left alone. Use `packctl apply --prune` if you want it
+# to also remove things it never installed itself.
+
+[brew]
+# plain names are formulae; prefix with cask: or tap: as needed
+# git
+# ripgrep
+# cask:visual-studio-code
+# tap:homebrew/cask-fonts
+aria2
+fastfetch
+fd
+fish
+jq
+pipx
+zoxide
+chezmoi
+git
+gh
+
+[flatpak]
+# short names are auto-resolved to verified Flathub app ids and cached
+# in Packfile.lock. Pin an exact id with `alias = org.example.App` if a
+# short name is ambiguous.
+# gimp
+# spotify
+sober
+firefox
+vesktop
+obsidian
+foliate
+flatseal
+kontainer
+keepassxc
+qbittorrent
+boxes
+gwenview
+haruna
+okular
+easyeffects
+prismlauncher
+kcalc
+
+[flatpak:unverified]
+# escape hatch: full app ids only, exempt from the verified-apps check.
+# use sparingly and only for apps you've vetted yourself.
+# org.example.SomeUnverifiedApp

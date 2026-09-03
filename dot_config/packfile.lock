@@ -1,0 +1,133 @@
+{
+  "flatpak": {
+    "boxes": {
+      "app_id": "org.gnome.Boxes",
+      "name": "Boxes",
+      "pinned": false,
+      "verified": true
+    },
+    "easyeffects": {
+      "app_id": "com.github.wwmm.easyeffects",
+      "name": "Easy Effects",
+      "pinned": false,
+      "verified": true
+    },
+    "firefox": {
+      "app_id": "org.mozilla.firefox",
+      "name": "Firefox",
+      "pinned": false,
+      "verified": true
+    },
+    "flatseal": {
+      "app_id": "com.github.tchx84.Flatseal",
+      "name": "Flatseal",
+      "pinned": false,
+      "verified": true
+    },
+    "foliate": {
+      "app_id": "com.github.johnfactotum.Foliate",
+      "name": "Foliate",
+      "pinned": false,
+      "verified": true
+    },
+    "gwenview": {
+      "app_id": "org.kde.gwenview",
+      "name": "Gwenview",
+      "pinned": false,
+      "verified": true
+    },
+    "haruna": {
+      "app_id": "org.kde.haruna",
+      "name": "Haruna",
+      "pinned": false,
+      "verified": true
+    },
+    "kcalc": {
+      "app_id": "org.kde.kcalc",
+      "name": "KCalc",
+      "pinned": false,
+      "verified": true
+    },
+    "keepassxc": {
+      "app_id": "org.keepassxc.KeePassXC",
+      "name": "KeePassXC",
+      "pinned": false,
+      "verified": true
+    },
+    "kontainer": {
+      "app_id": "io.github.DenysMb.Kontainer",
+      "name": "Kontainer",
+      "pinned": false,
+      "verified": true
+    },
+    "obsidian": {
+      "app_id": "md.obsidian.Obsidian",
+      "name": "Obsidian",
+      "pinned": false,
+      "verified": true
+    },
+    "okular": {
+      "app_id": "org.kde.okular",
+      "name": "Okular",
+      "pinned": false,
+      "verified": true
+    },
+    "prismlauncher": {
+      "app_id": "org.prismlauncher.PrismLauncher",
+      "name": "Prism Launcher",
+      "pinned": false,
+      "verified": true
+    },
+    "qbittorrent": {
+      "app_id": "org.qbittorrent.qBittorrent",
+      "name": "qBittorrent",
+      "pinned": false,
+      "verified": true
+    },
+    "sober": {
+      "app_id": "org.vinegarhq.Sober",
+      "name": "Sober",
+      "pinned": false,
+      "verified": true
+    },
+    "vesktop": {
+      "app_id": "dev.vencord.Vesktop",
+      "name": "Vesktop",
+      "pinned": false,
+      "verified": true
+    }
+  },
+  "managed": {
+    "brew_cask": [],
+    "brew_formula": [
+      "aria2",
+      "chezmoi",
+      "fastfetch",
+      "fd",
+      "fish",
+      "gh",
+      "git",
+      "jq",
+      "pipx",
+      "zoxide"
+    ],
+    "flatpak": [
+      "com.github.johnfactotum.Foliate",
+      "com.github.tchx84.Flatseal",
+      "com.github.wwmm.easyeffects",
+      "dev.vencord.Vesktop",
+      "io.github.DenysMb.Kontainer",
+      "md.obsidian.Obsidian",
+      "org.gnome.Boxes",
+      "org.kde.gwenview",
+      "org.kde.haruna",
+      "org.kde.kcalc",
+      "org.kde.okular",
+      "org.keepassxc.KeePassXC",
+      "org.mozilla.firefox",
+      "org.prismlauncher.PrismLauncher",
+      "org.qbittorrent.qBittorrent",
+      "org.vinegarhq.Sober"
+    ]
+  }
+}

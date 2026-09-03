@@ -1,0 +1,84 @@
+[02f02ee1-b947-4dd0-bdcf-16ce11ff4448]
+Description=Application settings for org.mozilla.firefox
+desktops=cc5f23c5-6691-453f-b57e-b6f5454ac112
+desktopsrule=2
+wmclass=\sorg.mozilla.firefox
+wmclasscomplete=true
+wmclassmatch=1
+
+[17f148a2-93db-4c45-a35f-2a72fe82a0a3]
+Description=Window settings for org.vinegarhq.Sober
+desktops=17188962-ad8a-44d9-b622-8a6b859c02f2
+desktopsrule=2
+title=Sober
+types=1
+wmclass=\sorg.vinegarhq.Sober
+wmclasscomplete=true
+wmclassmatch=1
+
+[1a7f708e-314d-4ce2-8b56-48fec2b278e4]
+Description=Application settings for WebApp-Tamaweb0689
+screen=1
+screenrule=2
+wmclass=\sWebApp-Tamaweb0689
+wmclasscomplete=true
+wmclassmatch=1
+
+[638154a7-4b89-49cc-b37d-cc8fe44be9fc]
+Description=Application settings for Personal Companion (for PC!)
+clientmachine=localhost
+desktops=\\0
+desktopsrule=3
+layer=overlay
+layerrule=2
+wmclass=Godot_Engine Personal Companion (for PC!)
+wmclasscomplete=true
+wmclassmatch=1
+
+[6d2966b3-177e-4d60-8f2e-f4735a426615]
+Description=Application settings for org.kde.konsole
+desktops=a8f795f8-4dec-425b-a120-d84b2318751f
+desktopsrule=3
+wmclass=konsole org.kde.konsole
+wmclasscomplete=true
+wmclassmatch=1
+
+[8aa999eb-4f57-417f-9bbd-e89bb9de4350]
+Description=Application settings for vesktop
+desktops=17188962-ad8a-44d9-b622-8a6b859c02f2
+desktopsrule=3
+wmclass=\svesktop
+wmclasscomplete=true
+wmclassmatch=1
+
+[General]
+count=9
+rules=638154a7-4b89-49cc-b37d-cc8fe44be9fc,6d2966b3-177e-4d60-8f2e-f4735a426615,1a7f708e-314d-4ce2-8b56-48fec2b278e4,17f148a2-93db-4c45-a35f-2a72fe82a0a3,a042c41c-7acc-46ec-a7a1-c985965fa684,02f02ee1-b947-4dd0-bdcf-16ce11ff4448,ca68e1e1-36d8-454a-94e6-7ad9f02fc78e,8aa999eb-4f57-417f-9bbd-e89bb9de4350,c27195fb-6172-4689-906b-467c1ea873b8
+
+[a042c41c-7acc-46ec-a7a1-c985965fa684]
+Description=Application settings for app.devsuite.Ptyxis
+desktops=961f4f2b-5570-4728-b949-cb4a742f44a7
+desktopsrule=3
+wmclass=\sapp.devsuite.Ptyxis
+wmclasscomplete=true
+wmclassmatch=1
+
+[c27195fb-6172-4689-906b-467c1ea873b8]
+Description=Application settings for Onboard
+acceptfocusrule=2
+clientmachine=localhost
+desktops=\\0
+desktopsrule=2
+layer=overlay
+layerrule=2
+wmclass=onboard Onboard
+wmclasscomplete=true
+wmclassmatch=1
+
+[ca68e1e1-36d8-454a-94e6-7ad9f02fc78e]
+Description=Application settings for page.kramo.Cartridges
+desktops=961f4f2b-5570-4728-b949-cb4a742f44a7
+desktopsrule=2
+wmclass=\spage.kramo.Cartridges
+wmclasscomplete=true
+wmclassmatch=1

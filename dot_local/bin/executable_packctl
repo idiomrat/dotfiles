@@ -1,0 +1,1210 @@
+#!/usr/bin/env python3
+"""
+packctl - declarative package management for Homebrew + Flatpak in one file.
+
+- One human-editable manifest ("Packfile") lists what you want installed.
+- Flatpak entries are short names ("gimp", "spotify") - packctl resolves them
+  to full app IDs (org.gimp.GIMP) automatically via the Flathub search API.
+- Only VERIFIED Flathub apps are auto-installed. Unverified apps require an
+  explicit, deliberate opt-in with the full app ID in [flatpak:unverified].
+- A companion `search` command lets you look up apps (and their verification
+  status) before adding them to your manifest.
+- Resolved short-name -> app-id mappings are cached in a lockfile so repeat
+  runs don't hit the network and so the exact app you approved keeps being
+  the exact app you get.
+
+No third-party dependencies - stdlib only. Requires the `flatpak` and/or
+`brew` binaries to be on PATH for whichever sections you actually use.
+
+    packctl apply              # install what's missing, auto-remove what
+                                # packctl previously installed and you've
+                                # since dropped from the Packfile. Anything
+                                # else on the system is left untouched.
+    packctl apply --prune      # also remove ANYTHING undeclared, even
+                                # stuff packctl never installed
+    packctl apply --purge      # when removing a package, also wipe its
+                                # data (cask --zap / flatpak --delete-data)
+    packctl apply --dry-run    # just show what would happen
+    packctl search obsidian    # look up brew formulae/casks + flathub apps
+    packctl resolve gimp       # show exactly what a short name resolves to
+    packctl lock               # (re)build the lockfile without installing
+
+See README.md for the Packfile format and full docs.
+"""
+
+from __future__ import annotations
+
+import argparse
+import itertools
+import json
+import os
+import subprocess
+import sys
+import shutil
+import threading
+import time
+import urllib.request
+import urllib.error
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+# --------------------------------------------------------------------------
+# Constants
+# --------------------------------------------------------------------------
+
+FLATHUB_SEARCH_URL = "https://flathub.org/api/v2/search"
+FLATHUB_APPSTREAM_URL = "https://flathub.org/api/v2/appstream/{app_id}"
+FLATHUB_VERIFICATION_URL = "https://flathub.org/api/v2/verification/{app_id}/status"
+FLATHUB_REMOTE_URL = "https://flathub.org/repo/flathub.flatpakrepo"
+USER_AGENT = "packctl/1.0 (+https://github.com/; declarative pkg manager)"
+HTTP_TIMEOUT = 12
+
+def default_packfile_path() -> Path:
+    return Path.home() / ".config" / "packfile"
+
+
+DEFAULT_PACKFILE = str(default_packfile_path())
+DEFAULT_LOCKFILE = "Packfile.lock"  # unused directly; lockfile path is derived from --file
+
+C_RESET = "\033[0m"
+C_BOLD = "\033[1m"
+C_GREEN = "\033[32m"
+C_RED = "\033[31m"
+C_YELLOW = "\033[33m"
+C_DIM = "\033[2m"
+C_CYAN = "\033[36m"
+
+
+def _color(text: str, code: str) -> str:
+    if not sys.stdout.isatty():
+        return text
+    return f"{code}{text}{C_RESET}"
+
+
+def info(msg: str) -> None:
+    print(msg)
+
+
+def warn(msg: str) -> None:
+    print(_color(f"warning: {msg}", C_YELLOW), file=sys.stderr)
+
+
+def err(msg: str) -> None:
+    print(_color(f"error: {msg}", C_RED), file=sys.stderr)
+
+
+def die(msg: str, code: int = 1) -> None:
+    err(msg)
+    sys.exit(code)
+
+
+# --------------------------------------------------------------------------
+# Spinner - small animated feedback for network calls / long-ish waits
+# --------------------------------------------------------------------------
+
+_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+
+class Spinner:
+    """A tiny braille spinner that runs on a background thread.
+
+    Falls back to a single static line (no animation, no carriage-return
+    tricks) when stdout isn't a tty, so piped/log output stays clean.
+    Usage:
+        with Spinner("Resolving flathub names..."):
+            slow_network_call()
+    Or manually via start()/stop(final_message, success).
+    """
+
+    def __init__(self, message: str):
+        self.message = message
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._interactive = sys.stdout.isatty()
+
+    def _run(self) -> None:
+        for frame in itertools.cycle(_SPINNER_FRAMES):
+            if self._stop_event.is_set():
+                break
+            sys.stdout.write(f"\r{_color(frame, C_CYAN)} {self.message}\x1b[K")
+            sys.stdout.flush()
+            time.sleep(0.08)
+
+    def start(self) -> "Spinner":
+        if not self._interactive:
+            print(self.message)
+            return self
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self, final_message: Optional[str] = None, success: bool = True) -> None:
+        if self._thread is not None:
+            self._stop_event.set()
+            self._thread.join()
+            sys.stdout.write("\r\x1b[K")
+            sys.stdout.flush()
+        if final_message:
+            mark = _color("✓", C_GREEN) if success else _color("✗", C_RED)
+            print(f"{mark} {final_message}")
+
+    def __enter__(self) -> "Spinner":
+        return self.start()
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.stop(success=exc_type is None)
+
+
+def applying_banner(text: str = "Applying Packfile") -> None:
+    """A short, purely cosmetic sweep animation shown right before packctl
+    starts actually changing your system - a clear, unmissable visual
+    boundary between "just planning" and "now doing things for real"."""
+    if not sys.stdout.isatty():
+        print(f"== {text} ==")
+        return
+    width = len(text) + 4
+    frames = 14
+    for i in range(frames):
+        bar = ["·"] * width
+        pos = i % width
+        for offset, ch in enumerate("»»»"):
+            idx = pos - offset
+            if 0 <= idx < width:
+                bar[idx] = ch
+        line = "".join(bar)
+        sys.stdout.write(f"\r{_color(line, C_CYAN)}")
+        sys.stdout.flush()
+        time.sleep(0.03)
+    sys.stdout.write("\r" + " " * width + "\r")
+    banner = f"⚡ {text} ⚡"
+    print(_color(banner, C_BOLD + C_GREEN))
+    print(_color("-" * len(banner), C_DIM))
+
+
+# --------------------------------------------------------------------------
+# Packfile parsing
+# --------------------------------------------------------------------------
+
+VALID_SECTIONS = {"brew", "flatpak", "flatpak:unverified"}
+
+
+@dataclass
+class BrewEntry:
+    kind: str  # "formula" | "cask" | "tap"
+    name: str
+
+
+@dataclass
+class FlatpakEntry:
+    alias: str          # what the user wrote in the Packfile (their handle for it)
+    literal_id: Optional[str] = None  # set if user pinned an exact app id
+
+
+@dataclass
+class Manifest:
+    brew: list[BrewEntry] = field(default_factory=list)
+    flatpak: list[FlatpakEntry] = field(default_factory=list)
+    flatpak_unverified: list[FlatpakEntry] = field(default_factory=list)
+    # Track whether a section header was present at all (even if left empty),
+    # as distinct from the section never existing in the file. An emptied
+    # section still needs processing so previously-managed packages that
+    # were just removed from it get cleaned up.
+    has_brew_section: bool = False
+    has_flatpak_section: bool = False
+    has_flatpak_unverified_section: bool = False
+
+
+class PackfileError(Exception):
+    pass
+
+
+def _looks_like_app_id(token: str) -> bool:
+    # Reverse-DNS flatpak app ids have at least two dots, e.g. org.gimp.GIMP
+    return token.count(".") >= 2 and all(part for part in token.split("."))
+
+
+def parse_packfile(path: Path) -> Manifest:
+    if not path.exists():
+        raise PackfileError(
+            f"no Packfile found at {path}. Run `packctl init` to create one, "
+            f"or pass --file to point at yours."
+        )
+
+    manifest = Manifest()
+    section: Optional[str] = None
+
+    for lineno, raw_line in enumerate(path.read_text().splitlines(), start=1):
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip()
+            if section not in VALID_SECTIONS:
+                raise PackfileError(
+                    f"{path}:{lineno}: unknown section [{section}]. "
+                    f"Valid sections: {', '.join(sorted(VALID_SECTIONS))}"
+                )
+            if section == "brew":
+                manifest.has_brew_section = True
+            elif section == "flatpak":
+                manifest.has_flatpak_section = True
+            elif section == "flatpak:unverified":
+                manifest.has_flatpak_unverified_section = True
+            continue
+
+        if section is None:
+            raise PackfileError(
+                f"{path}:{lineno}: entry outside of any [section]: {line!r}"
+            )
+
+        if section == "brew":
+            if line.startswith("cask:"):
+                manifest.brew.append(BrewEntry("cask", line[len("cask:"):].strip()))
+            elif line.startswith("tap:"):
+                manifest.brew.append(BrewEntry("tap", line[len("tap:"):].strip()))
+            else:
+                manifest.brew.append(BrewEntry("formula", line))
+
+        elif section == "flatpak":
+            if "=" in line:
+                alias, literal = (p.strip() for p in line.split("=", 1))
+                if not _looks_like_app_id(literal):
+                    raise PackfileError(
+                        f"{path}:{lineno}: {literal!r} doesn't look like a full "
+                        f"flatpak app id (need e.g. org.example.App)"
+                    )
+                manifest.flatpak.append(FlatpakEntry(alias=alias, literal_id=literal))
+            elif _looks_like_app_id(line):
+                # user typed a full id directly - honored, but still verified
+                manifest.flatpak.append(FlatpakEntry(alias=line, literal_id=line))
+            else:
+                manifest.flatpak.append(FlatpakEntry(alias=line))
+
+        elif section == "flatpak:unverified":
+            if "=" in line:
+                alias, literal = (p.strip() for p in line.split("=", 1))
+            else:
+                alias, literal = line, line
+            if not _looks_like_app_id(literal):
+                raise PackfileError(
+                    f"{path}:{lineno}: [flatpak:unverified] entries must be a full "
+                    f"app id (e.g. org.example.App), got {literal!r}. Short names "
+                    f"aren't allowed here since packctl can't safely guess which "
+                    f"unverified app you mean."
+                )
+            manifest.flatpak_unverified.append(FlatpakEntry(alias=alias, literal_id=literal))
+
+    return manifest
+
+
+PACKFILE_TEMPLATE = """\
+# Packfile - declarative manifest for Homebrew + Flatpak
+# Managed by packctl. Comments start with #, blank lines are ignored.
+#
+# Run `packctl apply` to install anything missing below. Removing a line
+# and re-running apply will also uninstall it automatically - packctl only
+# ever touches things it previously installed via this file; anything else
+# on your system is left alone. Use `packctl apply --prune` if you want it
+# to also remove things it never installed itself.
+
+[brew]
+# plain names are formulae; prefix with cask: or tap: as needed
+git
+ripgrep
+# cask:visual-studio-code
+# tap:homebrew/cask-fonts
+
+[flatpak]
+# short names are auto-resolved to verified Flathub app ids and cached
+# in Packfile.lock. Pin an exact id with `alias = org.example.App` if a
+# short name is ambiguous.
+# gimp
+# spotify
+
+[flatpak:unverified]
+# escape hatch: full app ids only, exempt from the verified-apps check.
+# use sparingly and only for apps you've vetted yourself.
+# org.example.SomeUnverifiedApp
+"""
+
+
+# --------------------------------------------------------------------------
+# Flathub HTTP client
+# --------------------------------------------------------------------------
+
+class FlathubError(Exception):
+    pass
+
+
+def _http_get_json(url: str) -> dict:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _http_post_json(url: str, payload: dict) -> dict:
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+@dataclass
+class FlathubHit:
+    app_id: str
+    name: str
+    summary: str
+
+
+def flathub_search(query: str, limit: int = 10) -> list[FlathubHit]:
+    """Search Flathub. Raises FlathubError on network/parse failure."""
+    try:
+        data = _http_post_json(FLATHUB_SEARCH_URL, {"query": query, "filters": []})
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
+        raise FlathubError(f"couldn't reach Flathub search API: {e}") from e
+    except json.JSONDecodeError as e:
+        raise FlathubError(f"Flathub search API returned unparseable JSON: {e}") from e
+
+    hits_raw = data.get("hits")
+    if hits_raw is None:
+        raise FlathubError(
+            "Flathub search API response didn't contain a 'hits' field - "
+            "the API may have changed. Try `packctl search --debug` for the raw response."
+        )
+
+    results: list[FlathubHit] = []
+    for h in hits_raw[:limit]:
+        # The v2 search API has occasionally nested the record under "document"
+        # (typesense-style) or returned it flat - handle both defensively.
+        doc = h.get("document", h) if isinstance(h, dict) else {}
+        app_id = doc.get("app_id") or doc.get("id") or doc.get("flatpakAppId")
+        name = doc.get("name") or app_id or "?"
+        summary = doc.get("summary") or ""
+        if not app_id:
+            continue
+        results.append(FlathubHit(app_id=app_id, name=name, summary=summary))
+    return results
+
+
+def flathub_is_verified(app_id: str) -> Optional[bool]:
+    """
+    Returns True/False if verification status could be determined,
+    or None if it couldn't be determined at all (treat as "not verified"
+    by callers - this is a safety default, not a network error).
+    """
+    # Primary source: the dedicated verification-status endpoint.
+    try:
+        data = _http_get_json(FLATHUB_VERIFICATION_URL.format(app_id=app_id))
+        if isinstance(data, dict) and "verified" in data:
+            return bool(data["verified"])
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
+        pass
+
+    # Fallback: verification is also embedded as custom appstream metadata
+    # (flathub::verification::verified) on the appstream endpoint.
+    try:
+        data = _http_get_json(FLATHUB_APPSTREAM_URL.format(app_id=app_id))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
+        return None
+
+    custom = data.get("custom") if isinstance(data, dict) else None
+    if isinstance(custom, dict):
+        val = custom.get("flathub::verification::verified")
+        if val is not None:
+            return str(val).lower() == "true"
+
+    verification = data.get("verification") if isinstance(data, dict) else None
+    if isinstance(verification, dict) and "verified" in verification:
+        return bool(verification["verified"])
+
+    return None
+
+
+# --------------------------------------------------------------------------
+# Lockfile
+# --------------------------------------------------------------------------
+
+MANAGED_KINDS = ("brew_formula", "brew_cask", "flatpak")
+
+
+def _default_lock() -> dict:
+    return {"flatpak": {}, "managed": {k: [] for k in MANAGED_KINDS}}
+
+
+def load_lock(path: Path) -> dict:
+    if not path.exists():
+        return _default_lock()
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        warn(f"{path} is corrupt JSON, ignoring it and starting fresh")
+        return _default_lock()
+    data.setdefault("flatpak", {})
+    data.setdefault("managed", {})
+    for k in MANAGED_KINDS:
+        data["managed"].setdefault(k, [])
+    return data
+
+
+def save_lock(path: Path, lock: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(lock, indent=2, sort_keys=True) + "\n")
+
+
+def get_managed(lock: dict, kind: str) -> set[str]:
+    """Items packctl declared (and thus took responsibility for) as of the
+    last successful `apply`. Anything NOT in here was never claimed by
+    packctl - even if it's undeclared now, packctl leaves it alone unless
+    --prune is passed explicitly."""
+    return set(lock.get("managed", {}).get(kind, []))
+
+
+def set_managed(lock: dict, kind: str, values: set[str]) -> None:
+    lock.setdefault("managed", {})[kind] = sorted(values)
+
+
+# --------------------------------------------------------------------------
+# Resolution: short name -> verified flatpak app id
+# --------------------------------------------------------------------------
+
+class ResolutionError(Exception):
+    pass
+
+
+def resolve_flatpak_entry(
+    entry: FlatpakEntry,
+    lock: dict,
+    refresh: bool = False,
+    verbose: bool = False,
+) -> str:
+    """Returns a verified app id for a [flatpak] manifest entry, or raises ResolutionError."""
+
+    if entry.literal_id:
+        # User pinned an exact id. Still must pass verification.
+        app_id = entry.literal_id
+        if verbose:
+            info(f"  {entry.alias}: pinned to {app_id}, checking verification...")
+        verified = flathub_is_verified(app_id)
+        if verified is not True:
+            raise ResolutionError(
+                f"{entry.alias!r} is pinned to {app_id!r} but it is not verified "
+                f"on Flathub (verified={verified}). If you trust it anyway, move it "
+                f"to [flatpak:unverified] instead."
+            )
+        lock["flatpak"][entry.alias] = {"app_id": app_id, "verified": True, "pinned": True}
+        return app_id
+
+    cached = lock["flatpak"].get(entry.alias)
+    if cached and not refresh:
+        return cached["app_id"]
+
+    try:
+        hits = flathub_search(entry.alias, limit=10)
+    except FlathubError as e:
+        raise ResolutionError(f"couldn't search Flathub for {entry.alias!r}: {e}") from e
+
+    if not hits:
+        raise ResolutionError(
+            f"no Flathub results for {entry.alias!r}. Try `packctl search {entry.alias}`."
+        )
+
+    # Score candidates: exact case-insensitive name match first, then
+    # a name that starts with the query, then whatever came back first
+    # (Flathub already ranks by relevance).
+    query_lower = entry.alias.lower()
+
+    def score(h: FlathubHit) -> int:
+        name_lower = h.name.lower()
+        if name_lower == query_lower:
+            return 0
+        if name_lower.replace(" ", "") == query_lower.replace(" ", ""):
+            return 1
+        if name_lower.startswith(query_lower):
+            return 2
+        return 3
+
+    hits.sort(key=score)
+
+    # Walk candidates in ranked order, verifying each, and take the first
+    # verified one. Cap how many verification calls we make per resolution.
+    checked = []
+    for h in hits[:8]:
+        verified = flathub_is_verified(h.app_id)
+        checked.append((h, verified))
+        if verified is True:
+            lock["flatpak"][entry.alias] = {
+                "app_id": h.app_id,
+                "name": h.name,
+                "verified": True,
+                "pinned": False,
+            }
+            if verbose:
+                info(f"  {entry.alias} -> {h.app_id} ({h.name}) [verified]")
+            return h.app_id
+
+    # Nothing verified matched. Give a useful error with what we found.
+    lines = [f"  - {h.app_id}  ({h.name})  verified={v}" for h, v in checked]
+    raise ResolutionError(
+        f"no VERIFIED Flathub app matched {entry.alias!r}. Candidates checked:\n"
+        + "\n".join(lines)
+        + f"\n\nIf one of these is actually what you want, pin it explicitly in "
+        f"the Packfile with:\n    {entry.alias} = <app id>\n"
+        f"or, if you accept the risk of an unverified app, add the full app id "
+        f"under [flatpak:unverified]."
+    )
+
+
+# --------------------------------------------------------------------------
+# System interaction: flatpak
+# --------------------------------------------------------------------------
+
+def require_binary(name: str) -> None:
+    if shutil.which(name) is None:
+        die(f"`{name}` is not installed or not on PATH.")
+
+
+def _brew_env() -> dict:
+    # The single biggest thing that makes `brew` commands feel slow is that,
+    # by default, almost any subcommand silently kicks off a `brew update`
+    # first (a full git fetch of the tap). None of packctl's uses of brew -
+    # search, list, install, uninstall - need to be pinned to the latest
+    # possible formula metadata to the second, so we opt out of that and a
+    # couple of other bits of unrelated ceremony (env hints, cleanup nags,
+    # analytics) that add latency without adding correctness.
+    env = dict(os.environ)
+    env.setdefault("HOMEBREW_NO_AUTO_UPDATE", "1")
+    env.setdefault("HOMEBREW_NO_ENV_HINTS", "1")
+    env.setdefault("HOMEBREW_NO_INSTALL_CLEANUP", "1")
+    env.setdefault("HOMEBREW_NO_ANALYTICS", "1")
+    return env
+
+
+def run(cmd: list[str], dry_run: bool = False) -> None:
+    printable = " ".join(cmd)
+    if dry_run:
+        info(_color(f"  (dry-run) $ {printable}", C_DIM))
+        return
+    info(_color(f"  $ {printable}", C_DIM))
+    env = _brew_env() if cmd and cmd[0] == "brew" else None
+    result = subprocess.run(cmd, env=env)
+    if result.returncode != 0:
+        die(f"command failed ({result.returncode}): {printable}")
+
+
+def flatpak_ensure_flathub_remote(dry_run: bool = False) -> None:
+    result = subprocess.run(
+        ["flatpak", "remotes", "--columns=name"], capture_output=True, text=True
+    )
+    remotes = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    if "flathub" in remotes:
+        return
+    info("Flathub remote not found, adding it...")
+    run(["flatpak", "remote-add", "--if-not-exists", "flathub", FLATHUB_REMOTE_URL], dry_run)
+
+
+def flatpak_installed_ids() -> set[str]:
+    result = subprocess.run(
+        ["flatpak", "list", "--app", "--columns=application"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        die(f"`flatpak list` failed: {result.stderr.strip()}")
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+def flatpak_install(app_id: str, dry_run: bool = False) -> None:
+    run(["flatpak", "install", "-y", "--system", "--noninteractive", "flathub", app_id], dry_run)
+
+
+def flatpak_uninstall(app_id: str, dry_run: bool = False, purge: bool = False) -> None:
+    cmd = ["flatpak", "uninstall", "-y", app_id]
+    if purge:
+        # Removes the app's data directory under ~/.var/app and any
+        # permissions it was granted, in addition to the app itself.
+        cmd.insert(2, "--delete-data")
+    run(cmd, dry_run)
+    run(["flatpak", "uninstall", "--unused"], dry_run)
+
+
+# --------------------------------------------------------------------------
+# System interaction: brew
+# --------------------------------------------------------------------------
+
+def brew_installed_taps() -> set[str]:
+    result = subprocess.run(["brew", "tap"], capture_output=True, text=True, env=_brew_env())
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+def brew_installed_formulae() -> set[str]:
+    # `brew leaves` = explicitly relevant, top-level formulae (excludes
+    # things only pulled in as dependencies), which is what we want to
+    # diff a declarative manifest against.
+    result = subprocess.run(["brew", "leaves"], capture_output=True, text=True, env=_brew_env())
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+def brew_installed_casks() -> set[str]:
+    result = subprocess.run(
+        ["brew", "list", "--cask", "-1"], capture_output=True, text=True, env=_brew_env()
+    )
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+class BrewSearchError(Exception):
+    pass
+
+
+def brew_search(query: str) -> list[tuple[str, str]]:
+    """Search locally-known brew formulae/casks (from your tapped, already-
+    indexed metadata - no extra network round trip beyond what brew itself
+    already keeps on disk). Returns a list of (kind, name) tuples where kind
+    is "formula" or "cask". Raises BrewSearchError on failure.
+
+    We search --formula and --cask separately rather than doing one combined
+    `brew search <query>` and trying to split the output on "==> Formulae" /
+    "==> Casks" headers. Those headers aren't reliably present (a plain
+    combined search often just prints a flat list of matching names with no
+    header at all), which silently produced zero hits despite real matches
+    existing. Searching each type explicitly always gives us an unambiguous,
+    flat list of names, so there's no fragile header-parsing needed."""
+    if shutil.which("brew") is None:
+        raise BrewSearchError("`brew` is not installed or not on PATH")
+
+    hits: list[tuple[str, str]] = []
+    for kind, flag in (("formula", "--formula"),):
+        result = subprocess.run(
+            ["brew", "search", flag, query], capture_output=True, text=True, env=_brew_env()
+        )
+        if result.returncode != 0:
+            raise BrewSearchError(result.stderr.strip() or "brew search failed")
+        for raw_line in result.stdout.splitlines():
+            line = raw_line.strip()
+            # Defensive: skip a header line if one ever does show up, and
+            # skip brew's occasional advisory/blank lines.
+            if not line or line.startswith("==>"):
+                continue
+            hits.append((kind, line))
+    return hits
+
+
+def brew_install(kind: str, name: str, dry_run: bool = False) -> None:
+    if kind == "tap":
+        run(["brew", "tap", name], dry_run)
+    elif kind == "cask":
+        run(["brew", "install", "--cask", name], dry_run)
+    else:
+        run(["brew", "install", name], dry_run)
+
+
+def brew_uninstall(kind: str, name: str, dry_run: bool = False, purge: bool = False) -> None:
+    if kind == "cask":
+        cmd = ["brew", "uninstall", "--cask", name]
+        if purge:
+            # --zap runs the cask's zap stanza, which trashes prefs,
+            # caches, and other app-owned data under ~/Library (etc).
+            # Only meaningful for casks - plain formulae have no zap
+            # stanza, so there's nothing extra for us to purge there.
+            cmd.append("--zap")
+        run(cmd, dry_run)
+        run(["brew", "autoremove"], dry_run)
+    else:
+        run(["brew", "uninstall", name], dry_run)
+        run(["brew", "autoremove"], dry_run)
+
+
+# --------------------------------------------------------------------------
+# Commands
+# --------------------------------------------------------------------------
+
+def cmd_init(args: argparse.Namespace) -> None:
+    path = Path(args.file)
+    if path.exists() and not args.force:
+        die(f"{path} already exists (use --force to overwrite)")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(PACKFILE_TEMPLATE)
+    info(f"wrote {path}")
+
+
+def cmd_search(args: argparse.Namespace) -> None:
+    want_brew = args.source in ("both", "brew")
+    want_flatpak = args.source in ("both", "flatpak")
+
+    brew_hits: list[tuple[str, str]] = []
+    brew_error: Optional[str] = None
+    flathub_hits: list[FlathubHit] = []
+    flathub_error: Optional[str] = None
+
+    def _do_brew() -> None:
+        nonlocal brew_hits, brew_error
+        try:
+            brew_hits = brew_search(args.query)
+        except BrewSearchError as e:
+            brew_error = str(e)
+
+    def _do_flathub() -> None:
+        nonlocal flathub_hits, flathub_error
+        try:
+            flathub_hits = flathub_search(args.query, limit=args.limit)
+        except FlathubError as e:
+            flathub_error = str(e)
+
+    # brew search hits the disk (fast, no network) and flathub search hits
+    # the network - run them on separate threads so the slower of the two
+    # sets the total time instead of the sum of both.
+    label = {"both": "brew + flathub", "brew": "brew", "flatpak": "flathub"}[args.source]
+    spinner = Spinner(f"Searching {label} for {args.query!r}...").start()
+    threads = []
+    if want_brew:
+        t = threading.Thread(target=_do_brew, daemon=True)
+        threads.append(t)
+    if want_flatpak:
+        t = threading.Thread(target=_do_flathub, daemon=True)
+        threads.append(t)
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    spinner.stop(success=not (brew_error and flathub_error))
+
+    if brew_error:
+        warn(f"brew search: {brew_error}")
+    if flathub_error:
+        warn(f"flathub search: {flathub_error}")
+
+    brew_hits = brew_hits[: args.limit]
+
+    if not brew_hits and not flathub_hits:
+        info(f"no results for {args.query!r}")
+        return
+
+    if args.json:
+        out = {
+            "brew": [{"kind": k, "name": n} for k, n in brew_hits],
+            "flathub": [],
+        }
+        for h in flathub_hits:
+            verified = flathub_is_verified(h.app_id) if not args.no_verify_check else None
+            out["flathub"].append(
+                {"app_id": h.app_id, "name": h.name, "summary": h.summary, "verified": verified}
+            )
+        print(json.dumps(out, indent=2))
+        return
+
+    if brew_hits:
+        print(_color("Brew:", C_BOLD))
+        kind_w = max(len(k) for k, _ in brew_hits)
+        for kind, name in brew_hits:
+            tag = _color(f"[{kind}]".ljust(kind_w + 2), C_CYAN)
+            print(f"  {tag} {name}")
+        if flathub_hits:
+            print()
+
+    if flathub_hits:
+        print(_color("Flatpak (Flathub):", C_BOLD))
+        name_w = max(len(h.name) for h in flathub_hits)
+        name_w = min(max(name_w, 12), 30)
+
+        verify_spinner = None
+        if not args.no_verify_check:
+            verify_spinner = Spinner("Checking verification status...").start()
+
+        rows = []
+        for h in flathub_hits:
+            if args.no_verify_check:
+                plain_badge = "?"
+                color = None
+            else:
+                v = flathub_is_verified(h.app_id)
+                plain_badge = "yes" if v else "no" if v is False else "?"
+                color = C_GREEN if v else C_RED if v is False else C_YELLOW
+            padded_badge = f"{plain_badge:<9}"
+            badge = _color(padded_badge, color) if color else padded_badge
+            name = (h.name[: name_w - 1] + "…") if len(h.name) > name_w else h.name
+            rows.append(f"{badge} {name:<{name_w}} {h.app_id:<40} {h.summary[:60]}")
+
+        if verify_spinner is not None:
+            verify_spinner.stop()
+
+        print(f"  {'VERIFIED':<9} {'NAME':<{name_w}} {'APP ID':<40} SUMMARY")
+        for row in rows:
+            print(f"  {row}")
+
+    print()
+    tips = []
+    if brew_hits:
+        tips.append("add a brew name straight to [brew] in your Packfile")
+    if flathub_hits:
+        tips.append("add a name from the flathub NAME column to [flatpak] (only verified apps auto-resolve)")
+    print(_color(" - ".join(tips), C_DIM))
+
+
+def cmd_resolve(args: argparse.Namespace) -> None:
+    lock_path = Path(args.lockfile)
+    lock = load_lock(lock_path)
+    entry = FlatpakEntry(alias=args.name)
+    spinner = Spinner(f"Resolving {args.name!r} via Flathub...").start()
+    try:
+        app_id = resolve_flatpak_entry(entry, lock, refresh=args.refresh, verbose=False)
+    except ResolutionError as e:
+        spinner.stop(success=False)
+        die(str(e))
+        return
+    spinner.stop()
+    info(_color(f"{args.name} -> {app_id}", C_GREEN))
+    if not args.no_save:
+        save_lock(lock_path, lock)
+
+
+def _resolve_all_flatpaks(manifest: Manifest, lock: dict, refresh: bool) -> dict[str, str]:
+    """Returns alias -> app_id for every [flatpak] entry. Dies with a clear
+    message listing ALL resolution failures (not just the first) if any fail."""
+    resolved: dict[str, str] = {}
+    errors: list[str] = []
+    total = len(manifest.flatpak)
+    if total == 0:
+        return resolved
+    spinner = Spinner(f"Resolving {total} flatpak entr{'y' if total == 1 else 'ies'} via Flathub...")
+    spinner.start()
+    try:
+        for entry in manifest.flatpak:
+            spinner.message = f"Resolving {entry.alias!r} via Flathub..."
+            try:
+                resolved[entry.alias] = resolve_flatpak_entry(entry, lock, refresh=refresh)
+            except ResolutionError as e:
+                errors.append(str(e))
+    finally:
+        spinner.stop(
+            final_message=(
+                f"resolved {len(resolved)}/{total} flatpak entr{'y' if total == 1 else 'ies'}"
+                if total else None
+            ),
+            success=not errors,
+        )
+    if errors:
+        for e in errors:
+            err(e)
+        die(f"{len(errors)} flatpak entr{'y' if len(errors) == 1 else 'ies'} failed to resolve, see above")
+    return resolved
+
+
+def cmd_lock(args: argparse.Namespace) -> None:
+    manifest = _load_manifest(args)
+    lock = load_lock(Path(args.lockfile))
+    resolved = _resolve_all_flatpaks(manifest, lock, refresh=args.refresh)
+    save_lock(Path(args.lockfile), lock)
+    for alias, app_id in resolved.items():
+        info(f"{alias} -> {app_id}")
+    info(_color(f"wrote {args.lockfile}", C_GREEN))
+
+
+def _load_manifest(args: argparse.Namespace) -> Manifest:
+    try:
+        return parse_packfile(Path(args.file))
+    except PackfileError as e:
+        die(str(e))
+        raise  # unreachable, keeps type checkers happy
+
+
+def cmd_apply(args: argparse.Namespace) -> None:
+    manifest = _load_manifest(args)
+
+    lock_path = Path(args.lockfile)
+    lock = load_lock(lock_path)
+
+    # Process a category if it's mentioned in the Packfile at all (even an
+    # emptied-out section still needs a pass so anything just removed from
+    # it gets cleaned up), OR if there's leftover managed state from a
+    # previous apply that needs reconciling (e.g. the whole section header
+    # was deleted outright rather than just emptied).
+    do_brew = not args.skip_brew and (
+        manifest.has_brew_section
+        or get_managed(lock, "brew_formula")
+        or get_managed(lock, "brew_cask")
+    )
+    do_flatpak = not args.skip_flatpak and (
+        manifest.has_flatpak_section
+        or manifest.has_flatpak_unverified_section
+        or get_managed(lock, "flatpak")
+    )
+
+    plan_brew_install: list[BrewEntry] = []
+    plan_brew_remove: list[tuple[str, str, str]] = []  # (kind, name, reason)
+    plan_flatpak_install: list[tuple[str, str]] = []  # (alias, app_id)
+    plan_flatpak_remove: list[tuple[str, str]] = []  # (app_id, reason)
+
+    # ---- brew plan ----
+    declared_formulae: set[str] = set()
+    declared_casks: set[str] = set()
+    if do_brew:
+        require_binary("brew")
+        declared_taps = {e.name for e in manifest.brew if e.kind == "tap"}
+        declared_formulae = {e.name for e in manifest.brew if e.kind == "formula"}
+        declared_casks = {e.name for e in manifest.brew if e.kind == "cask"}
+
+        installed_taps = brew_installed_taps()
+        installed_formulae = brew_installed_formulae()
+        installed_casks = brew_installed_casks()
+
+        for tap in sorted(declared_taps - installed_taps):
+            plan_brew_install.append(BrewEntry("tap", tap))
+        for f in sorted(declared_formulae - installed_formulae):
+            plan_brew_install.append(BrewEntry("formula", f))
+        for c in sorted(declared_casks - installed_casks):
+            plan_brew_install.append(BrewEntry("cask", c))
+
+        # Removals: by default we only ever remove something packctl itself
+        # took responsibility for in a previous `apply` (tracked in the
+        # lockfile) and that has since been dropped from the Packfile.
+        # Anything installed outside of packctl is left alone unless
+        # --prune explicitly says "match the system exactly, no exceptions".
+        managed_formula = get_managed(lock, "brew_formula")
+        managed_cask = get_managed(lock, "brew_cask")
+
+        if args.prune:
+            remove_formula = installed_formulae - declared_formulae
+            remove_cask = installed_casks - declared_casks
+        else:
+            remove_formula = (managed_formula - declared_formulae) & installed_formulae
+            remove_cask = (managed_cask - declared_casks) & installed_casks
+
+        for f in sorted(remove_formula):
+            reason = "dropped from Packfile" if f in managed_formula else "--prune"
+            plan_brew_remove.append(("formula", f, reason))
+        for c in sorted(remove_cask):
+            reason = "dropped from Packfile" if c in managed_cask else "--prune"
+            plan_brew_remove.append(("cask", c, reason))
+        # Taps are intentionally never auto-removed - untapping can
+        # break unrelated casks/formulae that depend on the tap.
+
+    # ---- flatpak plan ----
+    declared_ids: set[str] = set()
+    if do_flatpak:
+        require_binary("flatpak")
+        resolved = _resolve_all_flatpaks(manifest, lock, refresh=args.refresh)
+
+        # unverified escape-hatch entries: no resolution needed, just verify
+        # the id is well-formed (already checked at parse time).
+        for entry in manifest.flatpak_unverified:
+            resolved[entry.alias] = entry.literal_id  # type: ignore[assignment]
+
+        declared_ids = set(resolved.values())
+        installed_ids = flatpak_installed_ids()
+        managed_flatpak = get_managed(lock, "flatpak")
+
+        alias_by_id = {v: k for k, v in resolved.items()}
+        for app_id in sorted(declared_ids - installed_ids):
+            plan_flatpak_install.append((alias_by_id.get(app_id, app_id), app_id))
+
+        if args.prune:
+            remove_ids = installed_ids - declared_ids
+        else:
+            remove_ids = (managed_flatpak - declared_ids) & installed_ids
+        for app_id in sorted(remove_ids):
+            reason = "dropped from Packfile" if app_id in managed_flatpak else "--prune"
+            plan_flatpak_remove.append((app_id, reason))
+
+    # ---- show plan ----
+    nothing_to_do = not any(
+        [plan_brew_install, plan_brew_remove, plan_flatpak_install, plan_flatpak_remove]
+    )
+    print(_color("Plan:", C_BOLD))
+    if plan_brew_install:
+        print(_color("  brew install:", C_GREEN))
+        for e in plan_brew_install:
+            print(f"    + [{e.kind}] {e.name}")
+    if plan_brew_remove:
+        print(_color("  brew remove:", C_RED))
+        for kind, name, reason in plan_brew_remove:
+            print(f"    - [{kind}] {name}  ({reason})")
+    if plan_flatpak_install:
+        print(_color("  flatpak install:", C_GREEN))
+        for alias, app_id in plan_flatpak_install:
+            label = f"{alias} -> {app_id}" if alias != app_id else app_id
+            print(f"    + {label}")
+    if plan_flatpak_remove:
+        print(_color("  flatpak remove:", C_RED))
+        for app_id, reason in plan_flatpak_remove:
+            print(f"    - {app_id}  ({reason})")
+    if manifest.flatpak_unverified:
+        print(_color(
+            f"  note: {len(manifest.flatpak_unverified)} entr"
+            f"{'y is' if len(manifest.flatpak_unverified) == 1 else 'ies are'} "
+            f"from [flatpak:unverified] and skip Flathub's verification check.",
+            C_YELLOW,
+        ))
+    if args.purge and (plan_brew_remove or plan_flatpak_remove):
+        print(_color(
+            "  note: --purge is set - removals above will also permanently "
+            "delete each program's data (cask prefs/caches via --zap, "
+            "flatpak data via --delete-data). Formulae have no data to purge.",
+            C_YELLOW,
+        ))
+
+    if do_flatpak:
+        # Persist the short-name -> app-id resolution cache even on a
+        # dry run / early return - it's just a cache, cheap to keep fresh.
+        save_lock(lock_path, lock)
+
+    if nothing_to_do:
+        print(_color("  (nothing to do - everything matches the Packfile)", C_DIM))
+        return
+
+    if args.dry_run:
+        return
+
+    if not args.yes:
+        answer = input("\nProceed? [y/N] ").strip().lower()
+        if answer not in ("y", "yes"):
+            info("aborted")
+            return
+
+    print()
+    applying_banner()
+    if plan_brew_install or plan_brew_remove:
+        # taps first so formula/cask installs from them succeed
+        for e in [x for x in plan_brew_install if x.kind == "tap"]:
+            brew_install(e.kind, e.name, args.dry_run)
+        for e in [x for x in plan_brew_install if x.kind != "tap"]:
+            brew_install(e.kind, e.name, args.dry_run)
+        for kind, name, _reason in plan_brew_remove:
+            brew_uninstall(kind, name, args.dry_run, purge=args.purge)
+
+    if plan_flatpak_install or plan_flatpak_remove:
+        flatpak_ensure_flathub_remote(args.dry_run)
+        for _alias, app_id in plan_flatpak_install:
+            flatpak_install(app_id, args.dry_run)
+        for app_id, _reason in plan_flatpak_remove:
+            flatpak_uninstall(app_id, args.dry_run, purge=args.purge)
+
+    # Record what's now considered "managed" (i.e. what apply just made
+    # true) so a future apply knows what it's allowed to auto-remove if
+    # it disappears from the Packfile. Only touches categories we actually
+    # evaluated this run - --skip-brew / --skip-flatpak leave the other
+    # category's managed state untouched.
+    if do_brew:
+        set_managed(lock, "brew_formula", declared_formulae)
+        set_managed(lock, "brew_cask", declared_casks)
+    if do_flatpak:
+        set_managed(lock, "flatpak", declared_ids)
+    save_lock(lock_path, lock)
+
+    print(_color("\ndone.", C_GREEN))
+
+
+def cmd_status(args: argparse.Namespace) -> None:
+    args.dry_run = True
+    args.yes = True
+    cmd_apply(args)
+
+
+# --------------------------------------------------------------------------
+# argparse wiring
+# --------------------------------------------------------------------------
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="packctl",
+        description="Declaratively manage Homebrew + Flatpak from one Packfile.",
+    )
+    p.add_argument(
+        "-f", "--file", default=DEFAULT_PACKFILE,
+        help=f"path to Packfile (default: {DEFAULT_PACKFILE})",
+    )
+    p.add_argument("--lockfile", default=None, help="path to lockfile (default: <Packfile>.lock)")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    p_init = sub.add_parser("init", help="write a starter Packfile")
+    p_init.add_argument("--force", action="store_true", help="overwrite an existing Packfile")
+    p_init.set_defaults(func=cmd_init)
+
+    p_apply = sub.add_parser("apply", help="install/remove to match the Packfile")
+    p_apply.add_argument("--dry-run", action="store_true", help="show the plan, change nothing")
+    p_apply.add_argument("-y", "--yes", action="store_true", help="don't prompt for confirmation")
+    p_apply.add_argument(
+        "--prune", action="store_true",
+        help=(
+            "also remove things installed on the system but not in the Packfile, "
+            "even if packctl never installed them itself. Without this flag, apply "
+            "only auto-removes packages it previously installed via the Packfile "
+            "that have since been dropped from it - anything else is left alone."
+        ),
+    )
+    p_apply.add_argument("--refresh", action="store_true", help="ignore the lockfile cache and re-resolve all flatpak names")
+    p_apply.add_argument(
+        "--purge", action="store_true",
+        help=(
+            "when removing a package, also delete its data: runs "
+            "`brew uninstall --zap` for casks and "
+            "`flatpak uninstall --delete-data` for flatpaks. Irreversible - "
+            "prefs, caches, and saved app data go with it. Plain brew "
+            "formulae have no zap stanza, so this has no extra effect on them."
+        ),
+    )
+    p_apply.add_argument("--skip-brew", action="store_true")
+    p_apply.add_argument("--skip-flatpak", action="store_true")
+    p_apply.set_defaults(func=cmd_apply)
+
+    p_status = sub.add_parser("status", help="alias for `apply --dry-run --yes`")
+    p_status.add_argument("--refresh", action="store_true")
+    p_status.add_argument("--skip-brew", action="store_true")
+    p_status.add_argument("--skip-flatpak", action="store_true")
+    p_status.add_argument("--prune", action="store_true")
+    p_status.add_argument(
+        "--purge", action="store_true",
+        help="preview: also show that removals would delete each program's data",
+    )
+    p_status.set_defaults(func=cmd_status)
+
+    p_search = sub.add_parser("search", help="search brew + Flathub for packages")
+    p_search.add_argument("query")
+    p_search.add_argument("--limit", type=int, default=10)
+    p_search.add_argument("--json", action="store_true")
+    p_search.add_argument(
+        "--source", choices=["both", "brew", "flatpak"], default="both",
+        help="which source(s) to search (default: both, run concurrently)",
+    )
+    p_search.add_argument(
+        "--no-verify-check", action="store_true",
+        help="skip the extra per-result verification lookup (faster, shows '?' instead)",
+    )
+    p_search.set_defaults(func=cmd_search)
+
+    p_resolve = sub.add_parser("resolve", help="debug: show what a short name resolves to")
+    p_resolve.add_argument("name")
+    p_resolve.add_argument("--refresh", action="store_true")
+    p_resolve.add_argument("--no-save", action="store_true", help="don't write the result to the lockfile")
+    p_resolve.set_defaults(func=cmd_resolve)
+
+    p_lock = sub.add_parser("lock", help="resolve all [flatpak] entries and write the lockfile")
+    p_lock.add_argument("--refresh", action="store_true")
+    p_lock.set_defaults(func=cmd_lock)
+
+    return p
+
+
+def main(argv: Optional[list[str]] = None) -> None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.lockfile is None:
+        args.lockfile = str(Path(args.file).with_suffix(Path(args.file).suffix + ".lock")) \
+            if Path(args.file).suffix else f"{args.file}.lock"
+    args.func(args)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print()
+        die("interrupted")

@@ -1,0 +1,18 @@
+{
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "Custom"
+            }
+        ],
+        "Description": "Every window opens inset by a fixed gap from the screen edges, filling all remaining space. Re-fits to the new screen's gap area if dragged to another monitor.",
+        "Icon": "preferences-system-windows",
+        "Id": "gaptiler",
+        "License": "MIT",
+        "Name": "Gap Tiler",
+        "Version": "1.1"
+    },
+    "X-Plasma-API": "javascript",
+    "X-Plasma-MainScript": "code/main.js",
+    "KPackageStructure": "KWin/Script"
+}

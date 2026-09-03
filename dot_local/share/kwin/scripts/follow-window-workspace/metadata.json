@@ -1,0 +1,18 @@
+{
+    "KPlugin": {
+        "Name": "Follow Window Workspace",
+        "Description": "When a moved window lands on another virtual desktop because of a window rule, switch that monitor to the window's desktop.",
+        "Icon": "preferences-desktop-virtual",
+        "Id": "follow-window-workspace",
+        "Version": "1.0",
+        "License": "MIT",
+        "Authors": [
+            {
+                "Name": "ChatGPT"
+            }
+        ]
+    },
+    "X-Plasma-API": "javascript",
+    "X-Plasma-MainScript": "code/main.js",
+    "KPackageStructure": "KWin/Script"
+}
