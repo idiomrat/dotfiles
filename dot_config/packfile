@@ -11,6 +11,7 @@
 # plain names are formulae; prefix with cask: or tap: as needed
 # git
 # ripgrep
+#
 # cask:visual-studio-code
 # tap:homebrew/cask-fonts
 fastfetch

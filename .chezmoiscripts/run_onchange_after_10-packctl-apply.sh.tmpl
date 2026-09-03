@@ -1,3 +1,6 @@
+#!/bin/sh
+# Reruns only when dot_config/packfile's content changes.
+# hash: {{ include "dot_config/packfile" | sha256sum }}
 set -e
 
 echo "packfile changed — running packctl apply..."
