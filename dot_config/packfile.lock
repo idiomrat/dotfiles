@@ -42,6 +42,12 @@
       "pinned": false,
       "verified": true
     },
+    "hypnotix": {
+      "app_id": "io.github.qwersyk.Newelle",
+      "name": "Newelle",
+      "pinned": false,
+      "verified": true
+    },
     "kcalc": {
       "app_id": "org.kde.kcalc",
       "name": "KCalc",
