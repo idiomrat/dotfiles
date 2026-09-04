@@ -21,6 +21,7 @@ jq
 chezmoi
 git
 gh
+iptvnator
 
 [flatpak]
 # short names are auto-resolved to verified Flathub app ids and cached
