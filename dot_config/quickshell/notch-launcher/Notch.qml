@@ -212,7 +212,7 @@ PanelWindow {
         id: filteredApps
         values: {
             const q = root.query.trim().toLowerCase()
-            let apps = [...DesktopEntries.applications.values].filter(e => e.name)
+            let apps = [...DesktopEntries.applications.values].filter(e => e.name && e.name.trim().length > 0)
             if (q !== "")
                 apps = apps.filter(e => e.name.toLowerCase().includes(q))
 
