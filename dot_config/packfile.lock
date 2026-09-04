@@ -48,6 +48,12 @@
       "pinned": false,
       "verified": true
     },
+    "iptvnator": {
+      "app_id": "de.mediathekview.MediathekView",
+      "name": "MediathekView",
+      "pinned": false,
+      "verified": true
+    },
     "kcalc": {
       "app_id": "org.kde.kcalc",
       "name": "KCalc",
