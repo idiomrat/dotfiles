@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Exec=input-remapper-control --command autoload
+Hidden=false
+NoDisplay=false
+Name=Input Remapper Autoload
+Comment=Trigger profile injection at user login
