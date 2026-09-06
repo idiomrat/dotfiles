@@ -150,6 +150,23 @@ PanelWindow {
         Qt.callLater(() => AppUsage.bump(entry.id))
     }
 
+    // ---- pinned apps (shown next to the power buttons) ----
+    readonly property var pinnedAppHints: ["firefox", "vesktop", "steam", "tamaweb", "personal companion"]
+
+    function findPinnedApp(hint) {
+        const q = hint.toLowerCase()
+        const apps = DesktopEntries.applications.values
+        return apps.find(e => e.id && e.id.toLowerCase() === q)
+            || apps.find(e => (e.id && e.id.toLowerCase().includes(q)) || (e.name && e.name.toLowerCase().includes(q)))
+    }
+
+    function launchPinned(entry) {
+        if (!entry)
+            return
+        entry.execute()
+        closeLauncher()
+    }
+
     function handleEscape() {
         if (root.pendingPowerAction !== "") {
             root.cancelPower()
@@ -370,6 +387,46 @@ PanelWindow {
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 4
+
+                    Repeater {
+                        model: root.pinnedAppHints
+                        delegate: Item {
+                            id: pinnedItem
+                            required property string modelData
+                            readonly property var appEntry: root.findPinnedApp(modelData)
+
+                            visible: appEntry !== undefined
+                            width: visible ? 26 : 0
+                            height: 26
+
+                            Rectangle {
+                                anchors.fill: parent
+                                radius: 8
+                                color: pinnedMouse.containsMouse ? Theme.bgHover : "transparent"
+                            }
+
+                            IconImage {
+                                anchors.centerIn: parent
+                                implicitSize: 16
+                                source: pinnedItem.appEntry ? Quickshell.iconPath(pinnedItem.appEntry.icon, "application-x-executable") : ""
+                            }
+
+                            MouseArea {
+                                id: pinnedMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.launchPinned(pinnedItem.appEntry)
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        width: 1
+                        height: 16
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: Theme.border
+                    }
 
                     PowerButton {
                         iconName: "system-lock-screen"
