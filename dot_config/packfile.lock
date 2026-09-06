@@ -118,7 +118,8 @@
       "fish",
       "gh",
       "git",
-      "jq"
+      "jq",
+      "task"
     ],
     "flatpak": [
       "com.github.johnfactotum.Foliate",
