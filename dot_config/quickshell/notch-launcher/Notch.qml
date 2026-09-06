@@ -24,6 +24,12 @@ PanelWindow {
     property string query: ""
     property int selectedIndex: 0 // Tracks arrow key selection
 
+    // -1 means keyboard focus is in the main app list (selectedIndex above);
+    // >= 0 means it's on that index within pinnedApps instead. Pressing Up
+    // from the top of the app list moves focus up into the pinned row;
+    // pressing Down from the pinned row moves it back into the app list.
+    property int pinnedIndex: -1
+
     property string pendingPowerAction: ""
     property bool suppressReopen: false
 
@@ -133,6 +139,7 @@ PanelWindow {
         root.query = ""
         searchField.text = ""
         root.selectedIndex = 0
+        root.pinnedIndex = -1
         root.pendingPowerAction = ""
         searchField.focus = false
     }
@@ -151,7 +158,7 @@ PanelWindow {
     }
 
     // ---- pinned apps (shown next to the power buttons) ----
-    readonly property var pinnedAppHints: ["firefox", "dolphin", "vesktop", "steam", "tamaweb", "personal companion"]
+    readonly property var pinnedAppHints: ["firefox", "dolphin", "vesktop"]
 
     function findPinnedApp(hint) {
         const q = hint.toLowerCase()
@@ -159,6 +166,14 @@ PanelWindow {
         return apps.find(e => e.id && e.id.toLowerCase() === q)
             || apps.find(e => (e.id && e.id.toLowerCase().includes(q)) || (e.name && e.name.toLowerCase().includes(q)))
     }
+
+    // Resolved pinned apps, in display order, skipping any hint that didn't
+    // match an installed app. This is what's actually rendered and what
+    // keyboard navigation (pinnedIndex) indexes into, so the two never
+    // disagree about what's at a given position.
+    readonly property var pinnedApps: pinnedAppHints
+        .map(hint => root.findPinnedApp(hint))
+        .filter(entry => entry !== undefined)
 
     function launchPinned(entry) {
         if (!entry)
@@ -216,6 +231,7 @@ PanelWindow {
             Qt.callLater(() => searchField.forceActiveFocus())
         } else {
             root.selectedIndex = 0
+            root.pinnedIndex = -1
             appList.positionViewAtBeginning()
         }
     }
@@ -268,7 +284,13 @@ PanelWindow {
         readonly property real contentT: root.expanded ? 1 : 0
 
         readonly property real collapsedW: collapsedRow.implicitWidth + 10
-        readonly property real expandedW: Theme.expandedWidth
+        // The header row's two sides (clock/date on the left, pinned apps +
+        // power buttons on the right) never shrink -- instead, if they'd
+        // need more room than the theme's default width provides (e.g. once
+        // more pinned apps are added down the line), the whole notch grows
+        // to fit them with a comfortable gap in between.
+        readonly property real headerContentW: clockRow.implicitWidth + 24 + pinnedRow.implicitWidth
+        readonly property real expandedW: Math.max(Theme.expandedWidth, headerContentW + 32)
         readonly property real collapsedH: Theme.collapsedHeight - 6 + 8
         readonly property real expandedH: Theme.expandedHeight + 8
 
@@ -363,9 +385,11 @@ PanelWindow {
                 height: 26
 
                 Row {
+                    id: clockRow
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 10
+
                     Text {
                         text: Qt.formatDateTime(clock.date, "h:mm AP")
                         color: Theme.fg
@@ -384,31 +408,32 @@ PanelWindow {
                 }
 
                 Row {
+                    id: pinnedRow
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 4
 
                     Repeater {
-                        model: root.pinnedAppHints
+                        model: root.pinnedApps
                         delegate: Item {
                             id: pinnedItem
-                            required property string modelData
-                            readonly property var appEntry: root.findPinnedApp(modelData)
+                            required property var modelData
+                            required property int index
+                            readonly property bool isSelected: root.pinnedIndex === pinnedItem.index
 
-                            visible: appEntry !== undefined
-                            width: visible ? 26 : 0
+                            width: 26
                             height: 26
 
                             Rectangle {
                                 anchors.fill: parent
                                 radius: 8
-                                color: pinnedMouse.containsMouse ? Theme.bgHover : "transparent"
+                                color: (pinnedItem.isSelected || pinnedMouse.containsMouse) ? Theme.accentSoft : "transparent"
                             }
 
                             IconImage {
                                 anchors.centerIn: parent
                                 implicitSize: 16
-                                source: pinnedItem.appEntry ? Quickshell.iconPath(pinnedItem.appEntry.icon, "application-x-executable") : ""
+                                source: Quickshell.iconPath(pinnedItem.modelData.icon, "application-x-executable")
                             }
 
                             MouseArea {
@@ -416,7 +441,7 @@ PanelWindow {
                                 anchors.fill: parent
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
-                                onClicked: root.launchPinned(pinnedItem.appEntry)
+                                onClicked: root.launchPinned(pinnedItem.modelData)
                             }
                         }
                     }
@@ -472,9 +497,32 @@ PanelWindow {
                     onTextChanged: {
                         root.query = text
                         root.selectedIndex = 0
+                        root.pinnedIndex = -1
                     }
 
                     Keys.onPressed: event => {
+                        // While focus is up in the pinned-apps row, arrow
+                        // keys move between pinned apps (or back down into
+                        // the app list) instead of driving selectedIndex.
+                        if (root.pinnedIndex >= 0) {
+                            if (event.key === Qt.Key_Left) {
+                                if (root.pinnedIndex > 0)
+                                    root.pinnedIndex--
+                                event.accepted = true
+                            } else if (event.key === Qt.Key_Right) {
+                                if (root.pinnedIndex < root.pinnedApps.length - 1)
+                                    root.pinnedIndex++
+                                event.accepted = true
+                            } else if (event.key === Qt.Key_Down) {
+                                root.pinnedIndex = -1
+                                event.accepted = true
+                            } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                                root.launchPinned(root.pinnedApps[root.pinnedIndex])
+                                event.accepted = true
+                            }
+                            return
+                        }
+
                         if (event.key === Qt.Key_Down) {
                             if (root.selectedIndex < filteredApps.values.length - 1) {
                                 root.selectedIndex++
@@ -485,6 +533,11 @@ PanelWindow {
                             if (root.selectedIndex > 0) {
                                 root.selectedIndex--
                                 appList.positionViewAtIndex(root.selectedIndex, ListView.Contain)
+                            } else if (root.pinnedApps.length > 0) {
+                                // Already at the top of the app list --
+                                // hand focus up to the pinned apps row,
+                                // starting at the leftmost icon.
+                                root.pinnedIndex = 0
                             }
                             event.accepted = true
                         }
@@ -529,7 +582,7 @@ PanelWindow {
                     height: 46
                     radius: 8
 
-                    color: (index === root.selectedIndex || appMouse.containsMouse) ? Theme.accentSoft : "transparent"
+                    color: ((root.pinnedIndex === -1 && index === root.selectedIndex) || appMouse.containsMouse) ? Theme.accentSoft : "transparent"
 
                     Row {
                         anchors.fill: parent
