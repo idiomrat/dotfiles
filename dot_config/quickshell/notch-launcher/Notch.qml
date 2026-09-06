@@ -158,7 +158,7 @@ PanelWindow {
     }
 
     // ---- pinned apps (shown next to the power buttons) ----
-    readonly property var pinnedAppHints: ["firefox", "dolphin", "vesktop"]
+    readonly property var pinnedAppHints: ["firefox", "dolphin", "system update", "vesktop", "tamaweb", "personal companion", "sober"]
 
     function findPinnedApp(hint) {
         const q = hint.toLowerCase()
