@@ -1,0 +1,16 @@
+#!/bin/sh
+# Creates the isolated Firefox (Flatpak) profile directory used by the
+# Tamaweb webapp launcher, if it doesn't already exist.
+# Runs once per machine (chezmoi tracks this via the run_once_ prefix,
+# hashed on content — bump the script or its state to force a rerun).
+
+set -eu
+
+PROFILE_DIR="{{ .chezmoi.homeDir }}/.var/app/org.mozilla.firefox/data/ice/firefox/Tamaweb0689"
+
+if [ ! -d "$PROFILE_DIR" ]; then
+    mkdir -p "$PROFILE_DIR"
+    echo "Created Tamaweb Firefox profile directory: $PROFILE_DIR"
+else
+    echo "Tamaweb Firefox profile directory already exists: $PROFILE_DIR"
+fi

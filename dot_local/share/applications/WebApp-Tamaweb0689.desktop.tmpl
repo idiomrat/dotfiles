@@ -1,0 +1,19 @@
+[Desktop Entry]
+Version=1.0
+Name=Tamaweb
+Comment=Web App
+Exec=sh -c 'XAPP_FORCE_GTKWINDOW_ICON="{{ .chezmoi.homeDir }}/.local/share/ice/icons/Tamaweb.png" /var/lib/flatpak/exports/bin/org.mozilla.firefox --class WebApp-Tamaweb0689 --name WebApp-Tamaweb0689 --profile {{ .chezmoi.homeDir }}/.var/app/org.mozilla.firefox/data/ice/firefox/Tamaweb0689 --no-remote "https://autosam.github.io/Tamaweb/"'
+Terminal=false
+X-MultipleArgs=false
+Type=Application
+Icon={{ .chezmoi.homeDir }}/.local/share/ice/icons/Tamaweb.png
+Categories=GTK;WebApps;
+MimeType=text/html;text/xml;application/xhtml_xml;
+StartupWMClass=WebApp-Tamaweb0689
+StartupNotify=true
+X-WebApp-Browser=Firefox (Flatpak)
+X-WebApp-URL=https://autosam.github.io/Tamaweb/
+X-WebApp-CustomParameters=
+X-WebApp-Navbar=false
+X-WebApp-PrivateWindow=false
+X-WebApp-Isolated=true
