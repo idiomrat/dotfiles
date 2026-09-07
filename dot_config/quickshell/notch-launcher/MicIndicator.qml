@@ -11,6 +11,11 @@ import Quickshell.Widgets
 Item {
     id: root
 
+    // Lets callers override the icon's vertical nudge per usage site (the
+    // collapsed pill sits flush with the pinned-app icons at 0, while the
+    // expanded header needs a touch more to look aligned there).
+    property real iconOffsetY: 1.2
+
     // Nothing to show if there's no default source at all (e.g. no mic
     // connected) -- collapses to zero width so it doesn't leave a gap in
     // whatever Row it's placed in.
@@ -21,6 +26,7 @@ Item {
     IconImage {
         id: icon
         anchors.centerIn: parent
+        anchors.verticalCenterOffset: root.iconOffsetY
         implicitSize: 13
         source: Mic.muted
             ? Quickshell.iconPath("microphone-sensitivity-muted-symbolic", "audio-input-microphone-muted")

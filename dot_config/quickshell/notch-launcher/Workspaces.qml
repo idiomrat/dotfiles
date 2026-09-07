@@ -42,9 +42,27 @@ QtObject {
 
         [ -z "$cnt" ] || [ -z "$cur" ] && return
 
-        # Parse the single-line struct array using sed.
-        # Extracts the 0-based index right before our active UUID.
-        raw_idx=$(echo "$rows" | sed -n 's/.*(uss) \\([0-9][0-9]*\\), "'"$cur"'".*/\\1/p')
+        # Parse the single-line struct array with awk, extracting the
+        # 0-based index right before our active UUID. $cur is passed in via
+        # -v as a plain data value (never spliced into the awk program
+        # text), and matched with index()/substr() -- a literal substring
+        # search, not a regex -- so nothing in $cur (quotes, backslashes,
+        # regex metacharacters, whatever KWin hands us) can be interpreted
+        # as program syntax. The only actual regex used (\\(uss\\) [0-9]+, $)
+        # is a fixed pattern that never incorporates $cur.
+        raw_idx=$(echo "$rows" | awk -v cur="$cur" '
+        {
+            pos = index($0, "\\"" cur "\\"")
+            if (pos > 0) {
+                prefix = substr($0, 1, pos - 1)
+                if (match(prefix, /\\(uss\\) [0-9]+, $/)) {
+                    numpart = substr(prefix, RSTART, RLENGTH)
+                    gsub(/[^0-9]/, "", numpart)
+                    print numpart
+                    exit
+                }
+            }
+        }')
 
         if [ -n "$raw_idx" ]; then
             idx=$((raw_idx + 1))

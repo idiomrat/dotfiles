@@ -158,13 +158,60 @@ PanelWindow {
     }
 
     // ---- pinned apps (shown next to the power buttons) ----
-    readonly property var pinnedAppHints: ["firefox", "dolphin", "system update", "vesktop", "tamaweb", "personal companion", "sober"]
+    readonly property var pinnedAppHints: ["firefox", "dolphin", "konsole", "system update", "vesktop", "tamaweb", "personal companion", "sober"]
+
+    // Splits an id/name into alphanumeric tokens so we can check for a
+    // *whole-word* match (e.g. "dolphin" against "org.kde.dolphin") without
+    // also matching an unrelated app whose id merely contains "dolphin" as
+    // a substring (e.g. "dolphin-emu", the GameCube/Wii emulator).
+    function tokens(str) {
+        return str.toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length > 0)
+    }
 
     function findPinnedApp(hint) {
         const q = hint.toLowerCase()
+        const qTokens = root.tokens(hint)
         const apps = DesktopEntries.applications.values
-        return apps.find(e => e.id && e.id.toLowerCase() === q)
-            || apps.find(e => (e.id && e.id.toLowerCase().includes(q)) || (e.name && e.name.toLowerCase().includes(q)))
+
+        // Tier 1: exact id match.
+        let match = apps.find(e => e.id && e.id.toLowerCase() === q)
+        if (match)
+            return match
+
+        // Tier 2: exact name match.
+        match = apps.find(e => e.name && e.name.toLowerCase() === q)
+        if (match)
+            return match
+
+        // Tier 3: every word of the hint appears as a whole token in the
+        // id (word-boundary match, not a raw substring), e.g. "system
+        // update" hint -> id tokens ["org","kde","system","update"...].
+        match = apps.find(e => {
+            if (!e.id) return false
+            const idTokens = root.tokens(e.id)
+            return qTokens.every(t => idTokens.includes(t))
+        })
+        if (match)
+            return match
+
+        // Tier 4: same word-boundary check against the display name.
+        match = apps.find(e => {
+            if (!e.name) return false
+            const nameTokens = root.tokens(e.name)
+            return qTokens.every(t => nameTokens.includes(t))
+        })
+        if (match)
+            return match
+
+        // Tier 5: last resort, raw substring on id or name -- may still be
+        // ambiguous, so prefer whichever candidate has the shortest id
+        // (closest to an exact match) among everything that qualifies.
+        const candidates = apps.filter(e =>
+            (e.id && e.id.toLowerCase().includes(q)) || (e.name && e.name.toLowerCase().includes(q)))
+        if (candidates.length === 0)
+            return undefined
+        return candidates.reduce((best, e) =>
+            (e.id ?? e.name ?? "").length < (best.id ?? best.name ?? "").length ? e : best)
     }
 
     // Resolved pinned apps, in display order, skipping any hint that didn't
@@ -330,6 +377,7 @@ PanelWindow {
 
             MicIndicator {
                 anchors.verticalCenter: parent.verticalCenter
+                iconOffsetY: 0
             }
             Text {
                 text: Qt.formatDateTime(clock.date, "ddd d MMM")
@@ -402,9 +450,6 @@ PanelWindow {
                         font.pixelSize: 13
                         anchors.verticalCenter: parent.verticalCenter
                     }
-                    MicIndicator {
-                        anchors.verticalCenter: parent.verticalCenter
-                    }
                 }
 
                 Row {
@@ -412,6 +457,18 @@ PanelWindow {
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 4
+
+                    MicIndicator {
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+
+                    Rectangle {
+                        visible: Mic.available
+                        width: 1
+                        height: 16
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: Theme.border
+                    }
 
                     Repeater {
                         model: root.pinnedApps
@@ -427,7 +484,11 @@ PanelWindow {
                             Rectangle {
                                 anchors.fill: parent
                                 radius: 8
-                                color: (pinnedItem.isSelected || pinnedMouse.containsMouse) ? Theme.accentSoft : "transparent"
+                                // isSelected (driven by pinnedIndex) now
+                                // covers hover too, since hovering sets
+                                // pinnedIndex and leaves it there -- no need
+                                // to also check pinnedMouse.containsMouse.
+                                color: pinnedItem.isSelected ? Theme.accentSoft : "transparent"
                             }
 
                             IconImage {
@@ -442,6 +503,27 @@ PanelWindow {
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: root.launchPinned(pinnedItem.modelData)
+                                onEntered: {
+                                    // Selecting a pinned app by hover behaves
+                                    // like the keyboard Up-into-pinned-row
+                                    // case: it takes "focus" up into the
+                                    // pinned row (visually pulling it off
+                                    // the search field, same as keyboard nav
+                                    // already implies) and -- unlike the
+                                    // app-list hover above, which only sets
+                                    // selectedIndex for as long as the mouse
+                                    // stays over it -- the selection here is
+                                    // persistent, so it stays highlighted
+                                    // after the mouse moves off (until the
+                                    // mouse hovers an app in the list below,
+                                    // which clears it -- see its onEntered).
+                                    // Real keyboard focus stays on
+                                    // searchField the whole time so Enter
+                                    // still reaches the Keys.onPressed
+                                    // handler that launches the selected
+                                    // pinned app.
+                                    root.pinnedIndex = pinnedItem.index
+                                }
                             }
                         }
                     }
@@ -482,6 +564,14 @@ PanelWindow {
                 height: 40
                 radius: 10
                 color: Theme.accentSoft
+                // The outline now tracks real keyboard focus only, and
+                // stays visible even while a pinned app is hover/keyboard
+                // -selected (pinnedIndex >= 0) -- searchField still holds
+                // real keyboard focus underneath the whole time (it has to,
+                // or Enter/arrow keys would stop routing to the
+                // Keys.onPressed handler below that drives pinned-row
+                // navigation and launching), so there's no reason to hide
+                // the outline just because pinnedIndex moved off -1.
                 border.width: searchField.activeFocus ? 1 : 0
                 border.color: Theme.accent
 
@@ -540,15 +630,14 @@ PanelWindow {
                                 root.pinnedIndex = 0
                             }
                             event.accepted = true
+                        } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                            if (filteredApps.values.length > 0 && root.selectedIndex < filteredApps.values.length)
+                                root.launch(filteredApps.values[root.selectedIndex])
+                            event.accepted = true
                         }
                     }
 
                     Keys.onEscapePressed: root.handleEscape()
-
-                    Keys.onReturnPressed: {
-                        if (filteredApps.values.length > 0 && root.selectedIndex < filteredApps.values.length)
-                            root.launch(filteredApps.values[root.selectedIndex])
-                    }
                 }
 
                 Text {
@@ -616,7 +705,15 @@ PanelWindow {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: root.launch(appRow.modelData)
-                        onEntered: root.selectedIndex = index
+                        onEntered: {
+                            root.selectedIndex = index
+                            // Hovering back into the app list re-focuses the
+                            // launcher: if focus was up in the pinned row
+                            // (pinnedIndex >= 0), drop it back to -1 so the
+                            // pinned row's highlight clears and selection
+                            // returns to the app list.
+                            root.pinnedIndex = -1
+                        }
                     }
                 }
             }
