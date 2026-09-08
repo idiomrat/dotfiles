@@ -25,8 +25,11 @@ QtObject {
     // Half-life for usage counts, in days. Every elapsed half-life roughly
     // halves an app's accumulated weight, so something you used heavily a
     // few months ago but haven't touched since gradually sinks back down
-    // instead of camping the top of the list forever.
-    readonly property real halfLifeDays: 14
+    // instead of camping the top of the list forever. Kept long (weeks,
+    // not days) so total usage still dominates the ranking -- a burst of
+    // clicks on a new app over a few days shouldn't outrank something
+    // that's been a daily driver for months.
+    readonly property real halfLifeDays: 60
 
     // Decays all counts based on how long it's been since the last decay,
     // then bumps up entryId by one. Decaying lazily like this (rather than

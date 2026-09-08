@@ -9,6 +9,15 @@ alias clear='clear && fastfetch'
 
 alias update='ujust update && brew update && brew upgrade'
 
+function os-packedit
+	cd ~/testin-/recipes/
+	vim ~/testin-/recipes/recipe.yml
+        git add recipe.yml
+	git commit -m 'changes'
+	git push origin main
+	cd -
+end
+
 function dotfiles-push
     chezmoi re-add
     chezmoi git -- add .
