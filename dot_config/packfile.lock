@@ -30,6 +30,12 @@
       "pinned": false,
       "verified": true
     },
+    "gearlever": {
+      "app_id": "it.mijorus.gearlever",
+      "name": "Gear Lever",
+      "pinned": false,
+      "verified": true
+    },
     "gwenview": {
       "app_id": "org.kde.gwenview",
       "name": "Gwenview",
@@ -127,6 +133,7 @@
       "com.github.wwmm.easyeffects",
       "dev.vencord.Vesktop",
       "io.github.DenysMb.Kontainer",
+      "it.mijorus.gearlever",
       "md.obsidian.Obsidian",
       "org.gnome.Boxes",
       "org.kde.gwenview",
