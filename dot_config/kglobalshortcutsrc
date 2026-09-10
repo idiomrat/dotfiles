@@ -312,6 +312,8 @@ _launch=none
 ShowOSD=Display
 
 [services][org.kde.spectacle.desktop]
+CurrentMonitorScreenShot=none
+OpenWithoutScreenshot=none
 RecordRegion=Meta+Shift+R
 
 [services][org.mozilla.firefox.desktop]
