@@ -149,8 +149,7 @@
       "org.mozilla.firefox",
       "org.prismlauncher.PrismLauncher",
       "org.qbittorrent.qBittorrent",
-      "org.vinegarhq.Sober",
-      "tv.kodi.Kodi"
+      "org.vinegarhq.Sober"
     ]
   }
 }
