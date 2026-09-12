@@ -72,6 +72,12 @@
       "pinned": false,
       "verified": true
     },
+    "kodi": {
+      "app_id": "tv.kodi.Kodi",
+      "name": "Kodi",
+      "pinned": false,
+      "verified": true
+    },
     "kontainer": {
       "app_id": "io.github.DenysMb.Kontainer",
       "name": "Kontainer",
@@ -143,7 +149,8 @@
       "org.mozilla.firefox",
       "org.prismlauncher.PrismLauncher",
       "org.qbittorrent.qBittorrent",
-      "org.vinegarhq.Sober"
+      "org.vinegarhq.Sober",
+      "tv.kodi.Kodi"
     ]
   }
 }
